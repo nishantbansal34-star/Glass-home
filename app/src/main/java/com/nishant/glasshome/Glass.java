@@ -62,7 +62,7 @@ public class Glass {
         small.getPixels(px, 0, bw, 0, 0, bw, bh);
         for (int i = 0; i < 3; i++) px = boxBlur(px, bw, bh, 2);
         // Boost saturation a little: real glass makes colours behind it look richer.
-        for (int i = 0; i < px.length; i++) px[i] = saturate(px[i], 1.25f);
+        for (int i = 0; i < px.length; i++) px[i] = saturate(px[i], 1.4f);
         blur = Bitmap.createBitmap(px, bw, bh, Bitmap.Config.ARGB_8888);
         if (small != full) small.recycle();
         blurShader = new BitmapShader(blur, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
@@ -132,16 +132,19 @@ public class Glass {
             c.drawPath(p, body);
         }
         // Tint: the Clear ↔ Tinted slider.
-        float t = Math.min(1f, 0.05f + tint * 0.68f + extraTint);
-        int base = dark ? 0x2A2A2E : 0xFAFAFC;
+        // Glass lifts what's behind it: a faint white veil always, then the Clear↔Tinted tint on top.
+        float t = Math.min(1f, 0.03f + tint * (dark ? 0.5f : 0.6f) + extraTint);
         if (tintColor != 0) {
-            fill.setColor(Icons.alpha(0x000000, (0.35f + 0.3f * tint) * alpha));
+            fill.setColor(Icons.alpha(0x000000, (0.3f + 0.3f * tint) * alpha));
             c.drawPath(p, fill);
             fill.setColor(Icons.alpha(tintColor, 0.22f * alpha));
+            c.drawPath(p, fill);
         } else {
-            fill.setColor(Icons.alpha(base, t * alpha * (dark ? 1f : 0.85f)));
+            fill.setColor(Icons.alpha(0xFFFFFF, (dark ? 0.06f : 0.12f) * alpha));
+            c.drawPath(p, fill);
+            fill.setColor(Icons.alpha(dark ? 0x1C1C1E : 0xFFFFFF, t * alpha * (dark ? 0.9f : 0.75f)));
+            c.drawPath(p, fill);
         }
-        c.drawPath(p, fill);
         // Soft sheen across the top half.
         gm.setScale(1, r.height());
         gm.postTranslate(0, r.top);
@@ -149,8 +152,8 @@ public class Glass {
         sheen.setAlpha(a255);
         c.drawPath(p, sheen);
         // iOS 27: a darkened edge for definition...
-        edge.setStrokeWidth((big ? 1.6f : 1.1f) * dp);
-        edge.setColor(Icons.alpha(0x000000, (dark ? 0.35f : 0.12f) * alpha));
+        edge.setStrokeWidth((big ? 1.0f : 0.8f) * dp);
+        edge.setColor(Icons.alpha(0x000000, (dark ? 0.16f : 0.07f) * alpha));
         c.drawPath(p, edge);
         // ...and a brighter specular highlight riding the rim.
         gm.setScale(r.width(), r.height());

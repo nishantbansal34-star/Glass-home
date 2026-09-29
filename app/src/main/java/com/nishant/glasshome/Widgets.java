@@ -21,6 +21,33 @@ public class Widgets {
     private final Typeface medium = Typeface.create("sans-serif-medium", Typeface.NORMAL);
     private final Typeface regular = Typeface.create("sans-serif", Typeface.NORMAL);
 
+    private static final String[] NUMS = new String[32];
+    static { for (int i = 0; i < 32; i++) NUMS[i] = String.valueOf(i); }
+    private String[] letters;
+    private final Calendar calendar = Calendar.getInstance();
+    private int cachedDay = -1, cachedOffset;
+    private String cachedMonth;
+
+    /** Reused calendar set to "now" (no allocation per frame). */
+    private Calendar cal() {
+        calendar.setTimeInMillis(System.currentTimeMillis());
+        return calendar;
+    }
+
+    private void refreshMonth(Calendar now) {
+        int day = now.get(Calendar.YEAR) * 400 + now.get(Calendar.DAY_OF_YEAR);
+        if (day == cachedDay) return;
+        cachedDay = day;
+        String m = now.getDisplayName(Calendar.MONTH, Calendar.LONG, Locale.getDefault());
+        cachedMonth = m == null ? "" : m.toUpperCase(Locale.getDefault());
+        Calendar first = (Calendar) now.clone();
+        first.set(Calendar.DAY_OF_MONTH, 1);
+        cachedOffset = (first.get(Calendar.DAY_OF_WEEK) - first.getFirstDayOfWeek() + 7) % 7;
+    }
+
+    private String monthName(Calendar now) { refreshMonth(now); return cachedMonth; }
+    private int firstOffset(Calendar now) { refreshMonth(now); return cachedOffset; }
+
     public static float radius(RectF r) { return r.width() * 0.15f; }
 
     public void draw(Canvas c, RectF r, int kind, int style, Glass g, float alpha, float jiggle) {
@@ -68,9 +95,9 @@ public class Widgets {
             double ang = Math.PI * 2 * i / 12;
             float x = cx + (float) Math.sin(ang) * R * 0.72f;
             float y = cy - (float) Math.cos(ang) * R * 0.72f - (t.descent() + t.ascent()) / 2;
-            c.drawText(String.valueOf(i), x, y, t);
+            c.drawText(NUMS[i], x, y, t);
         }
-        Calendar now = Calendar.getInstance();
+        Calendar now = cal();
         float sec = now.get(Calendar.SECOND);
         float min = now.get(Calendar.MINUTE) + sec / 60f;
         float hr = (now.get(Calendar.HOUR) + min / 60f);
@@ -100,19 +127,17 @@ public class Widgets {
     private void calendar(Canvas c, RectF r, int fg, float a) {
         float s = r.width();
         float pad = s * 0.1f;
-        Calendar now = Calendar.getInstance();
+        Calendar now = cal();
         int today = now.get(Calendar.DAY_OF_MONTH);
-        String month = now.getDisplayName(Calendar.MONTH, Calendar.LONG, Locale.getDefault());
+        String month = monthName(now);
         t.setTextAlign(Paint.Align.LEFT);
         t.setTypeface(bold);
         t.setTextSize(s * 0.082f);
         t.setColor(Icons.alpha(0xFF3B30, a));
-        c.drawText(month == null ? "" : month.toUpperCase(Locale.getDefault()), r.left + pad, r.top + pad + s * 0.07f, t);
+        c.drawText(month, r.left + pad, r.top + pad + s * 0.07f, t);
 
-        Calendar first = (Calendar) now.clone();
-        first.set(Calendar.DAY_OF_MONTH, 1);
-        int firstDow = first.getFirstDayOfWeek();
-        int offset = (first.get(Calendar.DAY_OF_WEEK) - firstDow + 7) % 7;
+        int firstDow = now.getFirstDayOfWeek();
+        int offset = firstOffset(now);
         int days = now.getActualMaximum(Calendar.DAY_OF_MONTH);
         int rows = (offset + days + 6) / 7;
 
@@ -123,11 +148,17 @@ public class Widgets {
         t.setTextAlign(Paint.Align.CENTER);
         t.setTextSize(s * 0.058f);
         t.setTypeface(bold);
-        String[] names = new DateFormatSymbols(Locale.getDefault()).getShortWeekdays();
+        if (letters == null) {
+            letters = new String[8];
+            String[] names = new DateFormatSymbols(Locale.getDefault()).getShortWeekdays();
+            for (int d = 1; d <= 7; d++) {
+                String nm = names[d];
+                letters[d] = nm == null || nm.isEmpty() ? "" : nm.substring(0, 1).toUpperCase(Locale.getDefault());
+            }
+        }
         for (int i = 0; i < 7; i++) {
             int dow = (firstDow - 1 + i) % 7 + 1;
-            String n = names[dow];
-            String letter = n == null || n.isEmpty() ? "" : n.substring(0, 1).toUpperCase(Locale.getDefault());
+            String letter = letters[dow];
             t.setColor(Icons.alpha(fg, 0.5f * a));
             float x = r.left + pad - s * 0.01f + cellW * (i + 0.5f);
             c.drawText(letter, x, gridTop + rowH * 0.5f - (t.descent() + t.ascent()) / 2, t);
@@ -148,7 +179,7 @@ public class Widgets {
                 t.setColor(Icons.alpha(fg, a));
                 t.setTypeface(medium);
             }
-            c.drawText(String.valueOf(d), x, y - (t.descent() + t.ascent()) / 2, t);
+            c.drawText(NUMS[d], x, y - (t.descent() + t.ascent()) / 2, t);
         }
     }
 }

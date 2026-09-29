@@ -17,7 +17,9 @@ import android.text.Layout.Alignment;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.TextUtils;
+import android.os.Build;
 import android.view.HapticFeedbackConstants;
+import android.view.animation.AnimationUtils;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.View;
@@ -76,13 +78,17 @@ public class HomeView extends View {
 
     // ------------------------------------------------------------------ paging & animation
     private float pagePos;                           // 0 .. L (L = App Library)
-    private final Spring pageSpring = new Spring(260f, 1.0f);
+    private final Spring pageSpring = new Spring(320f, 1.0f);
     private boolean pageAnimating;
     private long lastFrame;
     private float time;                              // seconds, drives jiggle
     private long dotsUntil;
     private boolean editMode;
     private final Spring editSpring = new Spring(300f, 1f);
+    private final Spring homeZoom = new Spring(190f, 0.95f);
+    private int contentGen;
+    /** GPU display-list cache for pages and dock (Android 10+). */
+    private final PageCache cache = Build.VERSION.SDK_INT >= 29 ? new PageCache() : null;
 
     // ------------------------------------------------------------------ paints
     private final TextPaint label = new TextPaint(Paint.ANTI_ALIAS_FLAG);
@@ -113,7 +119,7 @@ public class HomeView extends View {
     private final ArrayList<Cat> cats = new ArrayList<>();
     private float libScroll;
     private final OverScroller libScroller;
-    private final RectF libField = new RectF();
+    private final RectF libField = new RectF(), libBoxTmp = new RectF();
 
     // ------------------------------------------------------------------ drag & drop
     private Item dragItem;
@@ -187,6 +193,7 @@ public class HomeView extends View {
         stroke.setStyle(Paint.Style.STROKE);
         stroke.setStrokeCap(Paint.Cap.ROUND);
         stroke.setStrokeJoin(Paint.Join.ROUND);
+        homeZoom.set(1f);
         readPrefs();
     }
 
@@ -203,7 +210,7 @@ public class HomeView extends View {
         glass.dark = dark;
         glass.tint = prefs.glass() / 100f;
         if (W > 0) geometry();
-        invalidate();
+        contentChanged();
     }
 
     public void setInsets(int top, int bottom) {
@@ -248,6 +255,7 @@ public class HomeView extends View {
         cellTop = Math.max(0, (rowH - cellH) / 2f);
         cap = cols * rows;
         cap0 = showWidgets ? cols * (rows - 2) : cap;
+        contentGen++;
 
         int px = Math.round(icon);
         if (px != icons.size()) {
@@ -267,10 +275,10 @@ public class HomeView extends View {
         if (changed) save();
         buildLibrary();
         if (pagePos > libIndex()) pagePos = libIndex();
-        invalidate();
+        contentChanged();
     }
 
-    private void save() { prefs.saveLayout(lay.toJson()); }
+    private void save() { prefs.saveLayout(lay.toJson()); contentGen++; }
 
     private int libIndex() { return lay.pages.size(); }
 
@@ -315,14 +323,22 @@ public class HomeView extends View {
     // ================================================================== drawing
 
     @Override protected void onDraw(Canvas c) {
-        long now = SystemClock.uptimeMillis();
-        float dt = lastFrame == 0 ? 0.016f : Math.min(0.05f, (now - lastFrame) / 1000f);
+        // Vsync-aligned frame time (not "whenever onDraw ran") keeps motion even.
+        long now = AnimationUtils.currentAnimationTimeMillis();
+        float dt = lastFrame == 0 ? 0.016f : Math.max(0.001f, Math.min(0.05f, (now - lastFrame) / 1000f));
         lastFrame = now;
         time += dt;
         boolean anim = step(dt);
+        anim |= homeZoom.step(dt);
 
+        float z = 1f - homeZoom.value;                       // 1 → just came back from an app
+        c.save();
+        if (z > 0.001f) c.scale(1 + 0.05f * z, 1 + 0.05f * z, W / 2f, H / 2f);
         glass.drawWallpaper(c, dark && prefs.wallMode() != Prefs.WALL_BUILTIN ? 0.22f : 0f);
+        c.restore();
 
+        c.save();
+        if (z > 0.001f) c.scale(1 + 0.12f * z, 1 + 0.12f * z, W / 2f, H * 0.45f);
         int L = libIndex();
         int p0 = (int) Math.floor(pagePos), p1 = (int) Math.ceil(pagePos);
         for (int p = Math.max(0, p0); p <= Math.min(L, p1); p++) {
@@ -330,9 +346,9 @@ public class HomeView extends View {
             if (p < L) anim |= drawPage(c, p, ox, dt);
             else drawLibrary(c, ox);
         }
-        // Rubber-band edges still show the neighbouring content only.
         anim |= drawDock(c, dt);
         drawPill(c, now);
+        c.restore();
         if (editSpring.value > 0.01f) drawEditButtons(c);
         if (dragItem != null) { drawDragged(c); anim = true; }
         if (folderSpring.value > 0.001f || folderOpen) drawFolder(c);
@@ -341,6 +357,20 @@ public class HomeView extends View {
 
         if (anim || editMode || now < dotsUntil + 300) postInvalidateOnAnimation();
         else lastFrame = 0;
+    }
+
+    /** Called when the user comes back from an app: the Home Screen settles in like iOS. */
+    public void playReturn() {
+        homeZoom.set(0);
+        homeZoom.target = 1f;
+        lastFrame = 0;
+        invalidate();
+    }
+
+    /** Something drawn on the pages changed (icons, layout, settings): re-record cached pages. */
+    public void contentChanged() {
+        contentGen++;
+        invalidate();
     }
 
     /** Advance springs. Returns true if anything is still moving. */
@@ -373,7 +403,41 @@ public class HomeView extends View {
     }
 
     private boolean drawPage(Canvas c, int p, float ox, float dt) {
+        boolean moving = layoutPage(p, dt);
+        boolean live = moving || editSpring.value > 0.001f || dragItem != null || pressedOn(p);
+        if (!live && cache != null && c.isHardwareAccelerated()) {
+            long key = ((long) contentGen << 32) | (p == 0 && showWidgets ? (System.currentTimeMillis() / 1000) & 0xFFFFFFFFL : 0);
+            final int page = p;
+            cache.draw(c, p, key, ox, W, H, rc -> paintPage(rc, page, 0));
+        } else paintPage(c, p, ox);
+        return moving;
+    }
+
+    /** Move icons toward their slots (smoothly, when things reflow). Returns true while moving. */
+    private boolean layoutPage(int p, float dt) {
         boolean moving = false;
+        List<Item> items = lay.pages.get(p);
+        float k = 1f - (float) Math.exp(-dt * 16f);
+        for (int i = 0; i < items.size(); i++) {
+            Item it = items.get(i);
+            int slot = i;
+            if (dragItem != null && !hoverDock && hoverPage == p && hoverInsert >= 0 && i >= hoverInsert) slot = i + 1;
+            float tx = slotX(slot), ty = slotY(p, slot);
+            if (!it.placed) { it.x = tx; it.y = ty; it.placed = true; }
+            else if (Math.abs(it.x - tx) > 0.5f || Math.abs(it.y - ty) > 0.5f) {
+                it.x += (tx - it.x) * k; it.y += (ty - it.y) * k; moving = true;
+            } else { it.x = tx; it.y = ty; }
+        }
+        return moving;
+    }
+
+    private boolean pressedOn(int p) {
+        if (pressed == null || touch != T_PENDING) return false;
+        if (pressed.type == Hit.WIDGET) return p == 0;
+        return pressed.type == Hit.ITEM && pressed.page == p;
+    }
+
+    private void paintPage(Canvas c, int p, float ox) {
         if (p == 0 && showWidgets) {
             int ws = widgetStyle();
             for (int i = 0; i < 2; i++) {
@@ -390,20 +454,13 @@ public class HomeView extends View {
             }
         }
         List<Item> items = lay.pages.get(p);
-        float k = 1f - (float) Math.exp(-dt * 16f);
         for (int i = 0; i < items.size(); i++) {
             Item it = items.get(i);
             int slot = i;
             if (dragItem != null && !hoverDock && hoverPage == p && hoverInsert >= 0 && i >= hoverInsert) slot = i + 1;
-            float tx = slotX(slot), ty = slotY(p, slot);
             boolean hidden = slot >= (p == 0 ? cap0 : cap);
-            if (!it.placed) { it.x = tx; it.y = ty; it.placed = true; }
-            else if (Math.abs(it.x - tx) > 0.5f || Math.abs(it.y - ty) > 0.5f) {
-                it.x += (tx - it.x) * k; it.y += (ty - it.y) * k; moving = true;
-            } else { it.x = tx; it.y = ty; }
             drawItem(c, it, ox + it.x, it.y, hidden ? 0f : 1f, true, isPressed(it));
         }
-        return moving;
     }
 
     private boolean isPressed(Item it) {
@@ -411,9 +468,8 @@ public class HomeView extends View {
     }
 
     private boolean drawDock(Canvas c, float dt) {
-        glass.panel(c, dockRect, dockRadius, 1f);
         boolean moving = false;
-        int n = lay.dock.size() + (dragItem != null && hoverDock && hoverInsert >= 0 ? 1 : 0);
+        final int n = lay.dock.size() + (dragItem != null && hoverDock && hoverInsert >= 0 ? 1 : 0);
         float k = 1f - (float) Math.exp(-dt * 16f);
         for (int i = 0; i < lay.dock.size(); i++) {
             Item it = lay.dock.get(i);
@@ -424,9 +480,21 @@ public class HomeView extends View {
             else if (Math.abs(it.x - tx) > 0.5f || Math.abs(it.y - ty) > 0.5f) {
                 it.x += (tx - it.x) * k; it.y += (ty - it.y) * k; moving = true;
             } else { it.x = tx; it.y = ty; }
+        }
+        boolean live = moving || editSpring.value > 0.001f || dragItem != null
+                || (pressed != null && touch == T_PENDING && pressed.type == Hit.ITEM && pressed.page < 0);
+        if (!live && cache != null && c.isHardwareAccelerated()) {
+            cache.draw(c, -1, contentGen, 0, W, H, this::paintDock);
+        } else paintDock(c);
+        return moving;
+    }
+
+    private void paintDock(Canvas c) {
+        glass.panel(c, dockRect, dockRadius, 1f);
+        for (int i = 0; i < lay.dock.size(); i++) {
+            Item it = lay.dock.get(i);
             drawItem(c, it, it.x, it.y, 1f, false, isPressed(it));
         }
-        return moving;
     }
 
     private void drawItem(Canvas c, Item it, float x, float y, float alpha, boolean withLabel, boolean isPressed) {
@@ -615,7 +683,8 @@ public class HomeView extends View {
             Cat cat = cats.get(i);
             float B = tmp.width();
             glass.panel(c, tmp, B * 0.2f, 1f);
-            RectF box = new RectF(tmp);
+            RectF box = libBoxTmp;
+            box.set(tmp);
             int big = cat.apps.size() > 4 ? 3 : Math.min(4, cat.apps.size());
             for (int s = 0; s < big; s++) {
                 libSlot(box, s, tmp2);

@@ -117,17 +117,26 @@ public class Icons {
         d.draw(c);
     }
 
-    private static void mask(Canvas c, Path clip) {
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        p.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
+    /**
+     * Cut the artwork to the squircle. (Drawing a DST_IN path only affects pixels the path covers,
+     * which left the corners untouched: draw the shape first, then the art SRC_IN over it.)
+     */
+    private static Bitmap mask(Bitmap content, Path clip) {
+        Bitmap out = Bitmap.createBitmap(content.getWidth(), content.getHeight(), Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(out);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         c.drawPath(clip, p);
+        p.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_IN));
+        c.drawBitmap(content, 0, 0, p);
+        content.recycle();
+        return out;
     }
 
     /** Thin glassy rim like iOS 26/27 icons: bright top-left edge, softer bottom-right. */
     private static void rim(Canvas c, Path clip, int s, float strength) {
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         p.setStyle(Paint.Style.STROKE);
-        p.setStrokeWidth(Math.max(1f, s / 50f));
+        p.setStrokeWidth(Math.max(1f, s / 64f));
         p.setShader(new LinearGradient(0, 0, s, s,
                 new int[]{alpha(0xFFFFFF, 0.55f * strength), alpha(0xFFFFFF, 0.08f * strength),
                         alpha(0xFFFFFF, 0f), alpha(0xFFFFFF, 0.28f * strength)},
@@ -154,8 +163,8 @@ public class Icons {
             if (!bleed) c.drawColor(0xFFFFFFFF);
             drawLegacy(c, d, s, bleed);
         }
-        mask(c, clip);
-        rim(c, clip, s, 1f);
+        b = mask(b, clip);
+        rim(new Canvas(b), clip, s, 1f);
         return b;
     }
 
@@ -175,8 +184,8 @@ public class Icons {
                 c.drawColor(0x66000000);
             } else drawLegacy(c, d, s, false);
         }
-        mask(c, clip);
-        rim(c, clip, s, 0.8f);
+        b = mask(b, clip);
+        rim(new Canvas(b), clip, s, 0.8f);
         return b;
     }
 
@@ -209,8 +218,7 @@ public class Icons {
             c.drawBitmap(copy, 0, 0, p);
             copy.recycle();
         }
-        mask(c, clip);
-        return b;
+        return mask(b, clip);
     }
 
     // ------------------------------------------------------------------ drawing (UI thread)

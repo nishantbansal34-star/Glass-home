@@ -20,13 +20,21 @@ import java.util.Random;
 public class Wallpapers {
     public static final String[] NAMES = {"Aurora", "Dusk", "Lagoon", "Graphite"};
 
-    // top, bottom, ribbon 1, ribbon 2, ribbon 3 — light variants; dark variants are derived.
-    private static final int[][] PALETTES = {
-            {0xFF6FA8FF, 0xFFF3B6A0, 0xFF3A6BFF, 0xFFB27CFF, 0xFFFF9F6B},
-            {0xFFFF9FB8, 0xFF5B3FA8, 0xFFFF6F91, 0xFF8E5CFF, 0xFFFFC37A},
-            {0xFF7FE3D6, 0xFF2D6FB0, 0xFF1FB5A3, 0xFF3E8EFF, 0xFFB6F28C},
-            {0xFFB9BEC7, 0xFF3A3D44, 0xFF8A93A3, 0xFF5E6675, 0xFFD9DEE6},
+    // {top, bottom, disc1..disc4} — separate light and dark versions (dark is not just "dimmed").
+    private static final int[][] LIGHT = {
+            {0xC7DCFF, 0xF7E6F0, 0x3D7BFF, 0x8B6BFF, 0xFF86B0, 0xFFB066},
+            {0xFFE0CC, 0xE9CCFF, 0xFF6A5C, 0xFF9E3D, 0xAE5BFF, 0x5A7BFF},
+            {0xCFF5EF, 0xD8E8FF, 0x10BFA0, 0x2B8CFF, 0x74DD76, 0x00B1E3},
+            {0xEDEFF2, 0xCFD3DA, 0x8C93A1, 0xB6BCC8, 0x5E6573, 0xDADDE3},
     };
+    private static final int[][] DARK = {
+            {0x04081C, 0x100620, 0x1E4BF0, 0x5B34E0, 0xE0327E, 0xF07A2E},
+            {0x160812, 0x080A1C, 0xD8453A, 0xE07A1E, 0x8A3BE0, 0x3D5BE0},
+            {0x021316, 0x040E26, 0x0C9C84, 0x1E6BE0, 0x3FAF4A, 0x0089B8},
+            {0x08090B, 0x14161A, 0x3A3F4A, 0x565C68, 0x2A2E36, 0x6E7582},
+    };
+    // disc centre x (of width), centre y (of height), radius (of width)
+    private static final float[][] DISCS = {{0.10f, 0.28f, 0.78f}, {0.98f, 0.50f, 0.72f}, {0.20f, 0.82f, 0.62f}, {0.88f, 1.04f, 0.55f}};
 
     public static Bitmap load(Context c, Prefs prefs, int w, int h, boolean dark) {
         Bitmap b = null;
@@ -36,61 +44,68 @@ public class Wallpapers {
         return b;
     }
 
-    /** Soft layered ribbons of colour, like light through stacked sheets of glass. */
+    /** Overlapping discs of coloured glass, each with a bright specular rim and a soft shadow. */
     public static Bitmap builtin(int w, int h, int style, boolean dark) {
-        int[] pal = PALETTES[Math.max(0, Math.min(PALETTES.length - 1, style))];
-        int gw = Math.max(16, w / 6), gh = Math.max(16, h / 6);
+        int[] pal = (dark ? DARK : LIGHT)[Math.max(0, Math.min(LIGHT.length - 1, style))];
+        int gw = Math.max(16, w / 3), gh = Math.max(16, h / 3);
         int[] px = new int[gw * gh];
-        float[][] rib = {
-                {0.30f, 0.10f, 5.2f, 0.4f, 0.13f},
-                {0.55f, 0.13f, 3.9f, 2.1f, 0.16f},
-                {0.80f, 0.09f, 6.3f, 4.0f, 0.12f},
-        };
+        float[] top = rgb(pal[0]), bot = rgb(pal[1]);
+        float[][] disc = new float[4][];
+        for (int i = 0; i < 4; i++) disc[i] = rgb(pal[2 + i]);
+        float[] col = new float[3];
         for (int y = 0; y < gh; y++) {
-            float ny = y / (float) (gh - 1);
+            float t = smooth(y / (float) (gh - 1));
             for (int x = 0; x < gw; x++) {
-                float nx = x / (float) (gw - 1);
-                float[] col = mix(pal[0], pal[1], smooth(ny));
-                for (int i = 0; i < 3; i++) {
-                    float[] rb = rib[i];
-                    float cy = rb[0] + rb[1] * (float) Math.sin(nx * rb[2] + rb[3]) + 0.05f * (float) Math.sin(nx * 11f + i);
-                    float d = (ny - cy) / rb[4];
-                    float wgt = (float) Math.exp(-d * d) * 0.85f;
-                    float[] rc = rgb(pal[2 + i]);
-                    for (int k = 0; k < 3; k++) col[k] += (rc[k] - col[k]) * wgt;
-                    // Bright glassy lip on the upper edge of each ribbon.
-                    float e = (ny - (cy - rb[4] * 0.75f)) / (rb[4] * 0.18f);
-                    float lip = (float) Math.exp(-e * e) * 0.35f;
-                    for (int k = 0; k < 3; k++) col[k] += (255 - col[k]) * lip;
+                for (int k = 0; k < 3; k++) col[k] = top[k] + (bot[k] - top[k]) * t;
+                for (int i = 0; i < 4; i++) {
+                    float[] D = DISCS[i];
+                    float dx = (x - D[0] * gw) / (D[2] * gw), dy = (y - D[1] * gh) / (D[2] * gw);
+                    float d = (float) Math.sqrt(dx * dx + dy * dy) + 1e-6f;
+                    float dirOut = (dx * 0.6f + dy * 0.8f) / d;          // toward bottom-right
+                    if (d > 1f) {                                          // soft shadow outside
+                        float e = (d - 1.04f) / 0.05f;
+                        float sh = (float) Math.exp(-e * e) * Math.max(0, (dx + dy) / d) * (dark ? 0.25f : 0.12f);
+                        for (int k = 0; k < 3; k++) col[k] *= 1 - sh;
+                    }
+                    float inside = 1f - smoothstep(0.985f, 1.0f, d);
+                    if (inside > 0) {
+                        float shade = Math.max(0.75f, Math.min(1.3f, 1 + 0.22f * (-(dx + dy) / 2)));
+                        for (int k = 0; k < 3; k++) col[k] += (disc[i][k] * shade - col[k]) * inside * 0.88f;
+                    }
+                    float e = (d - 0.975f) / 0.012f;
+                    float band = (float) Math.exp(-e * e);
+                    if (band > 0.001f) {
+                        float rim = band * (Math.max(0, -dirOut) * (dark ? 0.4f : 0.55f) + Math.max(0, dirOut) * 0.15f);
+                        for (int k = 0; k < 3; k++) col[k] += (255 - col[k]) * rim;
+                    }
                 }
-                if (dark) for (int k = 0; k < 3; k++) col[k] *= 0.42f + 0.12f * (1 - ny);
                 px[y * gw + x] = 0xFF000000 | (Glass.cl(col[0]) << 16) | (Glass.cl(col[1]) << 8) | Glass.cl(col[2]);
             }
         }
-        px = Glass.boxBlur(px, gw, gh, 1);
         Bitmap small = Bitmap.createBitmap(px, gw, gh, Bitmap.Config.ARGB_8888);
         Bitmap out = Bitmap.createScaledBitmap(small, w, h, true);
-        small.recycle();
+        if (out != small) small.recycle();
         // A touch of grain stops banding on big smooth gradients.
         Bitmap mutable = out.isMutable() ? out : out.copy(Bitmap.Config.ARGB_8888, true);
         Canvas c = new Canvas(mutable);
         Random r = new Random(3);
         Paint p = new Paint();
-        for (int i = 0; i < w * h / 90; i++) {
-            p.setColor(r.nextBoolean() ? 0x0CFFFFFF : 0x0C000000);
+        for (int i = 0; i < w * h / 120; i++) {
+            p.setColor(r.nextBoolean() ? 0x08FFFFFF : 0x08000000);
             c.drawPoint(r.nextInt(w), r.nextInt(h), p);
         }
         return mutable;
+    }
+
+    private static float smoothstep(float e0, float e1, float x) {
+        float t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+        return t * t * (3 - 2 * t);
     }
 
     private static float smooth(float t) { return t * t * (3 - 2 * t); }
 
     private static float[] rgb(int c) { return new float[]{(c >> 16) & 255, (c >> 8) & 255, c & 255}; }
 
-    private static float[] mix(int a, int b, float t) {
-        float[] x = rgb(a), y = rgb(b);
-        return new float[]{x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t, x[2] + (y[2] - x[2]) * t};
-    }
 
     // ------------------------------------------------------------------ photo
 

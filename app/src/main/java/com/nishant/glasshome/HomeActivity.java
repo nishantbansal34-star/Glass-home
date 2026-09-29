@@ -33,7 +33,7 @@ public class HomeActivity extends Activity implements HomeView.Host, SpotlightVi
     private HomeView home;
     private SpotlightView spot;
     private int seenVersion = -1;
-    private boolean resumed, wasResumedAtNewIntent;
+    private boolean resumed, wasResumedAtNewIntent, launchedApp;
     private int wallW, wallH, wallMode = -1, wallStyle = -1;
     private boolean wallDark;
     private long wallStamp;
@@ -94,6 +94,7 @@ public class HomeActivity extends Activity implements HomeView.Host, SpotlightVi
             if (!store.apps.isEmpty()) home.loadLayout();
         }
         home.buildLibrary();
+        if (launchedApp) { launchedApp = false; home.playReturn(); }
         home.invalidate();
     }
 
@@ -146,7 +147,7 @@ public class HomeActivity extends Activity implements HomeView.Host, SpotlightVi
             int f = d.getSystemUiVisibility();
             d.setSystemUiVisibility(lightTop ? f | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR : f & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
         }
-        home.invalidate();
+        home.contentChanged();
     }
 
     // ------------------------------------------------------------------ AppStore.Listener
@@ -156,7 +157,7 @@ public class HomeActivity extends Activity implements HomeView.Host, SpotlightVi
     }
 
     @Override public void onIconsReady() {
-        home.invalidate();
+        home.contentChanged();
         if (spot.getVisibility() == View.VISIBLE) spot.invalidate();
     }
 
@@ -166,6 +167,7 @@ public class HomeActivity extends Activity implements HomeView.Host, SpotlightVi
         try {
             Bundle opts = ActivityOptions.makeScaleUpAnimation(home, from.left, from.top, from.width(), from.height()).toBundle();
             store.launcherApps().startMainActivity(a.cn, a.user, from, opts);
+            launchedApp = true;
         } catch (Exception e) {
             Toast.makeText(this, "Can’t open " + a.label, Toast.LENGTH_SHORT).show();
         }

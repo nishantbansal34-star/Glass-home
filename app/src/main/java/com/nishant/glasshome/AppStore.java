@@ -2,7 +2,12 @@ package com.nishant.glasshome;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.pm.LauncherActivityInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Resources;
+import android.graphics.drawable.Drawable;
+import android.util.DisplayMetrics;
 import android.content.pm.LauncherApps;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
@@ -97,7 +102,7 @@ public class AppStore {
                 if (gen != generation) return;
                 if (a.renderedSize == size && a.full != null) continue;
                 try {
-                    if (a.raw == null) a.raw = a.lai.getIcon(ctx.getResources().getDisplayMetrics().densityDpi);
+                    if (a.raw == null) a.raw = originalIcon(a);
                     icons.render(a, size);
                 } catch (Throwable ignored) { }
                 if (++n % 8 == 0) main.post(() -> { if (listener != null) listener.onIconsReady(); });
@@ -107,6 +112,28 @@ public class AppStore {
     }
 
     public AppInfo get(String key) { return byKey.get(key); }
+
+    /**
+     * The app's own icon straight from its APK. Many phones (OxygenOS / ColorOS "dark icons",
+     * icon packs) repaint icons returned by the system; iOS shows the real artwork, so we load it
+     * directly and only fall back to the system's version if that fails.
+     */
+    private Drawable originalIcon(AppInfo a) {
+        int dpi = Math.max(ctx.getResources().getDisplayMetrics().densityDpi, DisplayMetrics.DENSITY_XXXHIGH);
+        try {
+            if (a.user.equals(Process.myUserHandle())) {
+                PackageManager pm = ctx.getPackageManager();
+                ActivityInfo ai = pm.getActivityInfo(a.cn, 0);
+                int res = ai.getIconResource();
+                if (res != 0) {
+                    Resources r = pm.getResourcesForApplication(ai.applicationInfo);
+                    Drawable d = r.getDrawableForDensity(res, dpi, null);
+                    if (d != null) return d;
+                }
+            }
+        } catch (Throwable ignored) { }
+        return a.lai.getIcon(dpi);
+    }
 
     /** Finds the app that would handle an intent (to fill the dock on first run). */
     public AppInfo resolve(Intent i) {
