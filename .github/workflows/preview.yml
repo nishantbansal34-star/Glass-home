@@ -1,0 +1,31 @@
+name: Preview APK
+on:
+  push:
+    branches: [ 'liquid-*' ]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build APK
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+      - name: Name APK
+        run: cp app/build/outputs/apk/release/app-release.apk GlassHome-liquid-preview.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: preview-liquid-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: GlassHome liquid preview ${{ github.run_number }}
+          body: Preview build of the liquid glass upgrade. Not the main release.
+          files: GlassHome-liquid-preview.apk
+          prerelease: true
+          make_latest: false
