@@ -36,6 +36,10 @@ public class Glass {
     private final Matrix gm = new Matrix();
     private final LinearGradient specGrad, sheenGrad;
     private final Path rp = new Path();
+    private LiquidLens lens;
+    private float lensRad;
+    /** GPU refraction on Android 13+; falls back to the magnified blur on older phones. */
+    public boolean gpuLens = true;
     private final RectF tmp = new RectF();
 
     public Glass(float density) {
@@ -115,11 +119,13 @@ public class Glass {
     public void panel(Canvas c, RectF r, float radius, float alpha, float extraTint, int tintColor) {
         rp.reset();
         rp.addRoundRect(r, radius, radius, Path.Direction.CW);
+        lensRad = radius;
         surface(c, rp, r, alpha, extraTint, tintColor, true);
     }
 
     /** Glass tile behind a Clear or Tinted icon. */
     public void iconTile(Canvas c, Path p, RectF r, int tintColor, float alpha) {
+        lensRad = Math.min(r.width(), r.height()) * 0.24f;
         surface(c, p, r, alpha, tintColor != 0 ? 0.15f : 0f, tintColor, false);
     }
 
@@ -127,9 +133,27 @@ public class Glass {
         if (alpha <= 0.01f) return;
         int a255 = Math.round(255 * alpha);
         if (blurShader != null) {
-            placeShader(r, big ? 1.06f : 1.12f);
-            body.setAlpha(a255);
-            c.drawPath(p, body);
+            if (gpuLens && LiquidLens.supported() && c.isHardwareAccelerated()) {
+                if (lens == null) {
+                    try { lens = new LiquidLens(); } catch (Throwable e) { gpuLens = false; }
+                }
+            }
+            if (lens != null && gpuLens && c.isHardwareAccelerated()) {
+                // GPU lens: magnified middle, rim that bends light in, faint colour split at the edge
+                sm.setScale(W / (float) blur.getWidth(), H / (float) blur.getHeight());
+                blurShader.setLocalMatrix(sm);
+                float small = Math.min(r.width(), r.height());
+                lens.mag = big ? 1.05f : 1.1f;
+                lens.bezel = Math.min(small * 0.38f, (big ? 22f : 12f) * dp);
+                lens.strength = (big ? 16f : 9f) * dp;
+                lens.disp = (big ? 1.6f : 1.1f) * dp;
+                lens.rimLight = dark ? 0.07f : 0.1f;
+                c.drawPath(p, lens.prepare(blurShader, r, lensRad, 0f, 0f, 1f, 1f, alpha));
+            } else {
+                placeShader(r, big ? 1.06f : 1.12f);
+                body.setAlpha(a255);
+                c.drawPath(p, body);
+            }
         }
         // Tint: the Clear ↔ Tinted slider.
         // Glass lifts what's behind it: a faint white veil always, then the Clear↔Tinted tint on top.
