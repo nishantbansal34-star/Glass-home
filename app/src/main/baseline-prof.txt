@@ -1,0 +1,4 @@
+# Startup profile: Android compiles these ahead of time, so Home draws from cold
+# without waiting on the just-in-time compiler.
+HSPLcom/nishant/glasshome/**;->**(**)**
+Lcom/nishant/glasshome/**;

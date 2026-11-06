@@ -26,7 +26,10 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
+            // R8: shrinks and optimises the code (smaller install, faster cold start)
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.personal
         }
         debug {
@@ -42,4 +45,9 @@ android {
         abortOnError false
         checkReleaseBuilds false
     }
+}
+
+dependencies {
+    // installs the startup profile (src/main/baseline-prof.txt), so Home opens from cold without waiting on the JIT
+    implementation 'androidx.profileinstaller:profileinstaller:1.4.1'
 }
