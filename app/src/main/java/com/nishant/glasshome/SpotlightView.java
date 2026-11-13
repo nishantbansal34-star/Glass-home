@@ -135,7 +135,7 @@ public class SpotlightView extends FrameLayout {
         if (getVisibility() != VISIBLE) { setVisibility(VISIBLE); rebuild(); }
         prog.set(p);
         field.setAlpha(p);
-        field.setTranslationY((1 - p) * -20 * dp);
+        field.setTranslationY(Motion.reduced() ? 0 : (1 - p) * -20 * dp);
         invalidate();
     }
 
@@ -145,6 +145,7 @@ public class SpotlightView extends FrameLayout {
         styleField();
         if (getVisibility() != VISIBLE) { setVisibility(VISIBLE); prog.set(0); }
         open = true;
+        prog.tune(380f, 1f);
         prog.target = 1f;
         scroll = 0;
         rebuild();
@@ -159,6 +160,7 @@ public class SpotlightView extends FrameLayout {
     public void close() {
         if (getVisibility() != VISIBLE) return;
         open = false;
+        Motion.tune(prog, Motion.CLOSE);       // leaving is quicker than arriving
         prog.target = 0f;
         hideKeyboard();
         invalidate();
@@ -334,7 +336,7 @@ public class SpotlightView extends FrameLayout {
         if (!scroller.isFinished() && scroller.computeScrollOffset()) { scroll = scroller.getCurrY(); anim = true; }
         float p = Math.max(0, Math.min(1, prog.value));
         field.setAlpha(p);
-        field.setTranslationY((1 - p) * -20 * dp);
+        field.setTranslationY(Motion.reduced() ? 0 : (1 - p) * -20 * dp);
         if (!open && prog.target == 0 && p <= 0.001f && !anim) {
             field.setText("");
             setVisibility(GONE);
@@ -349,7 +351,7 @@ public class SpotlightView extends FrameLayout {
         // Results
         c.save();
         c.clipRect(0, fieldRect.bottom + 6 * dp, W, H);
-        c.translate(0, -scroll + (1 - p) * -30 * dp);
+        c.translate(0, -scroll + (Motion.reduced() ? 0 : (1 - p) * -30 * dp));
         int style = prefs.iconStyle(), tint = prefs.tint();
         for (Entry e : entries) {
             if (e.r.bottom - scroll < 0 || e.r.top - scroll > H) continue;
@@ -442,7 +444,7 @@ public class SpotlightView extends FrameLayout {
 
         // Search field + Cancel
         c.save();
-        c.translate(0, (1 - p) * -20 * dp);
+        if (!Motion.reduced()) c.translate(0, (1 - p) * -20 * dp);
         glass.panel(c, fieldRect, fieldRect.height() / 2, p, 0.2f, 0);
         stroke.setColor(Icons.alpha(fg, 0.55f * p));
         stroke.setStrokeWidth(1.9f * dp);

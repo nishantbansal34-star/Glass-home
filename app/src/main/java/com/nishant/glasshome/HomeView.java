@@ -85,7 +85,16 @@ public class HomeView extends View {
     private long dotsUntil;
     private boolean editMode;
     private final Spring editSpring = new Spring(300f, 1f);
-    private final Spring homeZoom = new Spring(190f, 0.95f);
+    private final Spring homeZoom = new Spring(260f, 1f);
+    // Press feedback: one spring, attached to whatever the finger is on (an Item or a code).
+    private final Spring press = new Spring(Motion.PRESS_IN[0], 1f);
+    private Object pressKey, pendingKey;
+    private int pressPage = -9, pendingPage = -9;
+    private static final long P_WIDGET = 1L << 40, P_LIB = 2L << 40, P_FOLDER = 3L << 40;
+    private final Runnable showPress = this::beginPress;
+    private final Spring pill = new Spring(Motion.MORPH[0], 1f);       // 0 = "Search", 1 = page dots
+    private final Spring settle = new Spring(520f, 0.85f);              // dropped icon shrinking back
+    private Item settleItem;
     private int contentGen;
     /** GPU display-list cache for pages and dock (Android 10+). */
     private final PageCache cache = Build.VERSION.SDK_INT >= 29 ? new PageCache() : null;
@@ -131,7 +140,7 @@ public class HomeView extends View {
     private Item mergeCandidate, mergeTarget;
     private long mergeSince, edgeSince;
     private int edgeDir;
-    private final Spring dragLift = new Spring(400f, 0.7f);
+    private final Spring dragLift = new Spring(420f, 0.82f);
 
     // ------------------------------------------------------------------ folder overlay
     private Item folder;                 // null for App Library categories
@@ -333,12 +342,12 @@ public class HomeView extends View {
 
         float z = 1f - homeZoom.value;                       // 1 → just came back from an app
         c.save();
-        if (z > 0.001f) c.scale(1 + 0.05f * z, 1 + 0.05f * z, W / 2f, H / 2f);
+        if (z > 0.001f) c.scale(1 + 0.03f * z, 1 + 0.03f * z, W / 2f, H / 2f);
         glass.drawWallpaper(c, dark && prefs.wallMode() != Prefs.WALL_BUILTIN ? 0.22f : 0f);
         c.restore();
 
         c.save();
-        if (z > 0.001f) c.scale(1 + 0.12f * z, 1 + 0.12f * z, W / 2f, H * 0.45f);
+        if (z > 0.001f) c.scale(1 + 0.06f * z, 1 + 0.06f * z, W / 2f, H * 0.45f);
         int L = libIndex();
         int p0 = (int) Math.floor(pagePos), p1 = (int) Math.ceil(pagePos);
         for (int p = Math.max(0, p0); p <= Math.min(L, p1); p++) {
@@ -347,7 +356,7 @@ public class HomeView extends View {
             else drawLibrary(c, ox);
         }
         anim |= drawDock(c, dt);
-        drawPill(c, now);
+        anim |= drawPill(c, now);
         c.restore();
         if (editSpring.value > 0.01f) drawEditButtons(c);
         if (dragItem != null) { drawDragged(c); anim = true; }
@@ -361,6 +370,7 @@ public class HomeView extends View {
 
     /** Called when the user comes back from an app: the Home Screen settles in like iOS. */
     public void playReturn() {
+        if (Motion.reduced()) return;
         homeZoom.set(0);
         homeZoom.target = 1f;
         lastFrame = 0;
@@ -386,6 +396,10 @@ public class HomeView extends View {
         a |= menuSpring.step(dt);
         a |= alertSpring.step(dt);
         a |= dragLift.step(dt);
+        a |= press.step(dt);
+        a |= pill.step(dt);
+        if (settle.step(dt)) a = true; else settleItem = null;
+        if (press.atRest() && press.value == 0 && pressKey != null && pendingKey == null) { pressKey = null; pressPage = -9; }
         if (!libScroller.isFinished() && libScroller.computeScrollOffset()) {
             libScroll = libScroller.getCurrY();
             a = true;
@@ -398,13 +412,13 @@ public class HomeView extends View {
     }
 
     private float jiggle(Item it) {
-        if (editSpring.value < 0.01f || it == dragItem) return 0;
+        if (editSpring.value < 0.01f || it == dragItem || Motion.reduced()) return 0;
         return (float) Math.sin(time * 2 * Math.PI * 3.1 + it.phase) * 1.7f * editSpring.value;
     }
 
     private boolean drawPage(Canvas c, int p, float ox, float dt) {
         boolean moving = layoutPage(p, dt);
-        boolean live = moving || editSpring.value > 0.001f || dragItem != null || pressedOn(p);
+        boolean live = moving || editSpring.value > 0.001f || dragItem != null || pressedOn(p) || settleItem != null;
         if (!live && cache != null && c.isHardwareAccelerated()) {
             long key = ((long) contentGen << 32) | (p == 0 && showWidgets ? (System.currentTimeMillis() / 1000) & 0xFFFFFFFFL : 0);
             final int page = p;
@@ -432,9 +446,7 @@ public class HomeView extends View {
     }
 
     private boolean pressedOn(int p) {
-        if (pressed == null || touch != T_PENDING) return false;
-        if (pressed.type == Hit.WIDGET) return p == 0;
-        return pressed.type == Hit.ITEM && pressed.page == p;
+        return pressKey != null && pressPage == p;
     }
 
     private void paintPage(Canvas c, int p, float ox) {
@@ -442,13 +454,16 @@ public class HomeView extends View {
             int ws = widgetStyle();
             for (int i = 0; i < 2; i++) {
                 widgetRect(i, ox, tmp);
-                float j = editSpring.value > 0.01f ? (float) Math.sin(time * 2 * Math.PI * 3.1 + i * 2) * 1.2f * editSpring.value : 0;
-                boolean isPressed = pressed != null && pressed.type == Hit.WIDGET && pressed.index == i && touch == T_PENDING;
+                float j = editSpring.value > 0.01f && !Motion.reduced() ? (float) Math.sin(time * 2 * Math.PI * 3.1 + i * 2) * 1.2f * editSpring.value : 0;
+                float pv = pressOf(P_WIDGET | i);
+                c.save();
+                if (pv > 0) c.scale(1 - 0.04f * pv, 1 - 0.04f * pv, tmp.centerX(), tmp.centerY());
                 widgets.draw(c, tmp, i, ws, glass, 1f, j);
-                if (isPressed) {
-                    fill.setColor(0x33000000);
+                if (pv > 0.004f) {
+                    fill.setColor(Icons.alpha(0x000000, 0.18f * pv));
                     c.drawRoundRect(tmp, Widgets.radius(tmp), Widgets.radius(tmp), fill);
                 }
+                c.restore();
                 if (showLabels) drawLabel(c, i == 0 ? "Clock" : "Calendar", tmp.centerX(), tmp.bottom + 6 * dp, 1f);
                 if (editSpring.value > 0.01f && i == 0) drawBadge(c, tmp.left, tmp.top, editSpring.value);
             }
@@ -459,12 +474,59 @@ public class HomeView extends View {
             int slot = i;
             if (dragItem != null && !hoverDock && hoverPage == p && hoverInsert >= 0 && i >= hoverInsert) slot = i + 1;
             boolean hidden = slot >= (p == 0 ? cap0 : cap);
-            drawItem(c, it, ox + it.x, it.y, hidden ? 0f : 1f, true, isPressed(it));
+            drawItem(c, it, ox + it.x, it.y, hidden ? 0f : 1f, true, pressOf(it));
         }
     }
 
-    private boolean isPressed(Item it) {
-        return pressed != null && pressed.item == it && (touch == T_PENDING) && !editMode;
+    // ------------------------------------------------------------------ press feedback
+
+    private float pressOf(Object key) {
+        return pressKey != null && pressKey.equals(key) ? press.value : 0f;
+    }
+
+    /** Finger down on something tappable: highlight after a beat, so swipes never flash icons. */
+    private void armPress(Object key, int page) {
+        removeCallbacks(showPress);
+        pendingKey = key;
+        pendingPage = page;
+        if (key != null) postDelayed(showPress, 60);
+    }
+
+    private void beginPress() {
+        if (pendingKey == null) return;
+        pressKey = pendingKey;
+        pressPage = pendingPage;
+        pendingKey = null;
+        Motion.tune(press, Motion.PRESS_IN);
+        press.target = 1f;
+        invalidate();
+    }
+
+    /** Let go (or the touch became a swipe/drag/menu): spring back, a little slower than going in. */
+    private void releasePress(boolean tapped) {
+        removeCallbacks(showPress);
+        if (tapped && pendingKey != null) {
+            // A quick tap never reached the delayed highlight: give it a short dip instead.
+            pressKey = pendingKey;
+            pressPage = pendingPage;
+            press.set(0);
+            press.velocity = 38f;
+        }
+        pendingKey = null;
+        Motion.tune(press, Motion.PRESS_OUT);
+        press.target = 0f;
+        invalidate();
+    }
+
+    private static Object keyFor(Hit h) {
+        if (h == null) return null;
+        switch (h.type) {
+            case Hit.ITEM: return h.item;
+            case Hit.WIDGET: return P_WIDGET | h.index;
+            case Hit.LIB: return P_LIB | ((long) h.index << 8) | h.slot;
+            case Hit.FOLDER_ITEM: return P_FOLDER | h.index;
+            default: return null;
+        }
     }
 
     private boolean drawDock(Canvas c, float dt) {
@@ -481,8 +543,7 @@ public class HomeView extends View {
                 it.x += (tx - it.x) * k; it.y += (ty - it.y) * k; moving = true;
             } else { it.x = tx; it.y = ty; }
         }
-        boolean live = moving || editSpring.value > 0.001f || dragItem != null
-                || (pressed != null && touch == T_PENDING && pressed.type == Hit.ITEM && pressed.page < 0);
+        boolean live = moving || editSpring.value > 0.001f || dragItem != null || pressedOn(-1) || settleItem != null;
         if (!live && cache != null && c.isHardwareAccelerated()) {
             cache.draw(c, -1, contentGen, 0, W, H, this::paintDock);
         } else paintDock(c);
@@ -493,22 +554,27 @@ public class HomeView extends View {
         glass.panel(c, dockRect, dockRadius, 1f);
         for (int i = 0; i < lay.dock.size(); i++) {
             Item it = lay.dock.get(i);
-            drawItem(c, it, it.x, it.y, 1f, false, isPressed(it));
+            drawItem(c, it, it.x, it.y, 1f, false, pressOf(it));
         }
     }
 
-    private void drawItem(Canvas c, Item it, float x, float y, float alpha, boolean withLabel, boolean isPressed) {
+    private void drawItem(Canvas c, Item it, float x, float y, float alpha, boolean withLabel, float pv) {
         if (alpha <= 0) return;
+        if (editMode) pv = 0;
         float j = jiggle(it);
         c.save();
         if (j != 0) c.rotate(j, x + icon / 2, y + icon / 2);
+        float sc = (1 - 0.06f * pv) * (it == settleItem ? 1 + 0.12f * settle.value : 1);
+        c.save();
+        if (sc != 1f) c.scale(sc, sc, x + icon / 2, y + icon / 2);
         if (mergeTarget == it) {
             float g = icon * 0.14f;
             fill.setColor(0x4DFFFFFF);
             c.drawPath(icons.path(x - g, y - g, icon + 2 * g), fill);
         }
         if (it.folder) drawFolderIcon(c, it, x, y, icon, alpha);
-        else icons.draw(c, store.get(it.key), x, y, icon, iconStyle, tint, glass, isPressed, alpha);
+        else icons.draw(c, store.get(it.key), x, y, icon, iconStyle, tint, glass, pv, alpha);
+        c.restore();
         if (withLabel && showLabels) {
             String name = it.folder ? it.title : labelOf(it.key);
             drawLabel(c, name, x + icon / 2, y + icon + 5 * dp, alpha * (1f - 0f));
@@ -545,42 +611,55 @@ public class HomeView extends View {
     }
 
     private void drawBadge(Canvas c, float x, float y, float a) {
-        float r = 11 * dp * a;
+        a = Math.max(0, Math.min(1, a));
+        float r = 11 * dp * (0.6f + 0.4f * a);           // starts at 60%, never from zero
         float cx = x + 2 * dp, cy = y + 2 * dp;
-        fill.setColor(dark ? 0xF03A3A3C : 0xF0E5E5EA);
+        fill.setColor(Icons.alpha(dark ? 0x3A3A3C : 0xE5E5EA, 0.94f * a));
         c.drawCircle(cx, cy, r, fill);
         stroke.setStrokeWidth(2.2f * dp);
-        stroke.setColor(dark ? 0xFFFFFFFF : 0xFF000000);
+        stroke.setColor(Icons.alpha(dark ? 0xFFFFFF : 0x000000, a));
         c.drawLine(cx - r * 0.45f, cy, cx + r * 0.45f, cy, stroke);
     }
 
-    private void drawPill(Canvas c, long now) {
-        float a = Math.max(0, Math.min(1, libIndex() - pagePos));
-        if (a <= 0.01f) return;
+    /** Returns true while the pill is still morphing. */
+    private boolean drawPill(Canvas c, long now) {
         boolean dots = now < dotsUntil || touch == T_PAGING || pageAnimating || dragItem != null;
+        float want = dots ? 1f : 0f;
+        if (pill.target != want) {
+            Motion.tune(pill, Motion.MORPH);
+            pill.target = want;
+            if (Motion.reduced()) pill.set(want);
+        }
+        float a = Math.max(0, Math.min(1, libIndex() - pagePos));
+        if (a <= 0.01f) return !pill.atRest();
+        float d = Math.max(0, Math.min(1, pill.value));
         int n = libIndex();
-        float w = pillRect.width();
-        if (dots) w = Math.max(n * 12 * dp + 24 * dp, 60 * dp);
+        float dotsW = Math.max(n * 12 * dp + 24 * dp, 60 * dp);
+        float w = pillRect.width() + (dotsW - pillRect.width()) * d;
         tmp.set(pillRect.centerX() - w / 2, pillRect.top, pillRect.centerX() + w / 2, pillRect.bottom);
         glass.panel(c, tmp, tmp.height() / 2, a);
         int fg = dark ? 0xFFFFFF : 0x1C1C1E;
-        if (dots) {
+        // Crossfade with a small offset in the second half so the two never read as overlapping.
+        float da = a * Math.max(0, (d - 0.35f) / 0.65f), sa = a * Math.max(0, (0.65f - d) / 0.65f);
+        if (da > 0.01f) {
             float sx = tmp.centerX() - (n - 1) * 6 * dp;
             for (int i = 0; i < n; i++) {
-                float d = Math.abs(pagePos - i);
-                fill.setColor(Icons.alpha(fg, a * (d < 0.5f ? 0.95f : 0.35f)));
+                float dist = Math.min(1, Math.abs(pagePos - i));
+                fill.setColor(Icons.alpha(fg, da * (0.95f - 0.6f * dist)));
                 c.drawCircle(sx + i * 12 * dp, tmp.centerY(), 3.6f * dp, fill);
             }
-        } else {
+        }
+        if (sa > 0.01f) {
             text.setTypeface(semibold);
             text.setTextSize(14 * sp);
             text.setTextAlign(Paint.Align.LEFT);
-            text.setColor(Icons.alpha(fg, 0.85f * a));
+            text.setColor(Icons.alpha(fg, 0.85f * sa));
             float tw = text.measureText("Search");
             float gx = tmp.centerX() - (tw + 18 * dp) / 2;
-            magnifier(c, gx + 6 * dp, tmp.centerY(), 5.5f * dp, Icons.alpha(fg, 0.85f * a));
+            magnifier(c, gx + 6 * dp, tmp.centerY(), 5.5f * dp, Icons.alpha(fg, 0.85f * sa));
             c.drawText("Search", gx + 18 * dp, tmp.centerY() - (text.ascent() + text.descent()) / 2, text);
         }
+        return !pill.atRest();
     }
 
     private void magnifier(Canvas c, float cx, float cy, float r, int color) {
@@ -688,8 +767,11 @@ public class HomeView extends View {
             int big = cat.apps.size() > 4 ? 3 : Math.min(4, cat.apps.size());
             for (int s = 0; s < big; s++) {
                 libSlot(box, s, tmp2);
-                icons.draw(c, cat.apps.get(s), tmp2.left, tmp2.top, tmp2.width(), iconStyle, tint, glass,
-                        pressed != null && pressed.type == Hit.LIB && pressed.index == i && pressed.slot == s && touch == T_PENDING, 1f);
+                float pv = pressOf(P_LIB | ((long) i << 8) | s);
+                c.save();
+                if (pv > 0) c.scale(1 - 0.06f * pv, 1 - 0.06f * pv, tmp2.centerX(), tmp2.centerY());
+                icons.draw(c, cat.apps.get(s), tmp2.left, tmp2.top, tmp2.width(), iconStyle, tint, glass, pv, 1f);
+                c.restore();
             }
             if (cat.apps.size() > 4) {
                 libSlot(box, 3, tmp2);
@@ -729,6 +811,7 @@ public class HomeView extends View {
         folderFrom.set(from);
         folderScroll = 0;
         folderOpen = true;
+        Motion.tune(folderSpring, Motion.FOLDER_OPEN);
         folderSpring.target = 1f;
         folderLayout();
         performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
@@ -753,6 +836,7 @@ public class HomeView extends View {
     public void closeFolder() {
         if (!folderOpen) return;
         folderOpen = false;
+        Motion.tune(folderSpring, Motion.FOLDER_CLOSE);
         folderSpring.target = 0f;
         // Refresh where the folder icon is, in case it moved.
         invalidate();
@@ -768,14 +852,15 @@ public class HomeView extends View {
 
     private void drawFolder(Canvas c) {
         if (folderKeys == null) return;
-        float p = Math.max(0, folderSpring.value);
-        float pc = Math.min(1, p);
+        float pc = Math.max(0, Math.min(1, folderSpring.value));
+        boolean still = Motion.reduced();
+        float p = still ? 1f : Math.max(0, Math.min(1.03f, folderSpring.value));
         glass.drawBackdrop(c, pc);
         float l = lerp(folderFrom.left, folderPanel.left, p), t = lerp(folderFrom.top, folderPanel.top, p);
         float r = lerp(folderFrom.right, folderPanel.right, p), b = lerp(folderFrom.bottom, folderPanel.bottom, p);
         tmp.set(l, t, r, b);
         float rad = lerp(icon * 0.225f, folderPanel.width() * 0.12f, pc);
-        glass.panel(c, tmp, rad, 1f, 0.12f * pc, 0);
+        glass.panel(c, tmp, rad, still ? pc : 1f, 0.12f * pc, 0);
 
         // Title
         text.setTypeface(bold);
@@ -805,8 +890,11 @@ public class HomeView extends View {
             float x = folderIconX(i), y = folderIconY(i);
             if (y + folderRowH < folderPanel.top || y > folderPanel.bottom) continue;
             AppInfo a = store.get(folderKeys.get(i));
-            boolean pr = pressed != null && pressed.type == Hit.FOLDER_ITEM && pressed.index == i && touch == T_FOLDER;
-            icons.draw(c, a, x, y, icon, iconStyle, tint, glass, pr, ca);
+            float pv = editMode ? 0 : pressOf(P_FOLDER | i);
+            c.save();
+            if (pv > 0) c.scale(1 - 0.06f * pv, 1 - 0.06f * pv, x + icon / 2, y + icon / 2);
+            icons.draw(c, a, x, y, icon, iconStyle, tint, glass, pv, ca);
+            c.restore();
             if (a != null) drawLabel(c, a.label, x + icon / 2, y + icon + 5 * dp, ca);
         }
         c.restore();
@@ -873,6 +961,7 @@ public class HomeView extends View {
         menuRect.set(left, top, left + mw, top + mh);
         menuVisible = true;
         menuPressed = -1;
+        Motion.tune(menuSpring, Motion.OPEN);
         menuSpring.target = 1f;
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
         invalidate();
@@ -899,6 +988,7 @@ public class HomeView extends View {
 
     public void closeMenu() {
         menuVisible = false;
+        Motion.tune(menuSpring, Motion.CLOSE);
         menuSpring.target = 0f;
         invalidate();
     }
@@ -908,14 +998,14 @@ public class HomeView extends View {
         float p = Math.max(0, menuSpring.value), pc = Math.min(1, p);
         glass.drawBackdrop(c, pc * 0.95f);
         // Lifted icon or widget
-        float s = 1f + 0.06f * pc;
+        float s = 1f + (Motion.reduced() ? 0 : 0.06f * pc);
         c.save();
         c.scale(s, s, menuAnchor.centerX(), menuAnchor.centerY());
         if (menuItem != null && menuItem.folder) drawFolderIcon(c, menuItem, menuAnchor.left, menuAnchor.top, menuAnchor.width(), 1f);
         else if (menuApp != null) icons.draw(c, menuApp, menuAnchor.left, menuAnchor.top, menuAnchor.width(), iconStyle, tint, glass, false, 1f);
         c.restore();
         // Panel grows out of the icon.
-        float sc = 0.5f + 0.5f * p;
+        float sc = Motion.reduced() ? 1f : 0.92f + 0.08f * pc;
         float px = menuAnchor.centerX() < W / 2f ? menuRect.left : menuRect.right;
         float py = menuAbove ? menuRect.bottom : menuRect.top;
         c.save();
@@ -1023,13 +1113,15 @@ public class HomeView extends View {
         alertRect.set(W / 2f - w / 2, H / 2f - h / 2, W / 2f + w / 2, H / 2f + h / 2);
         alertVisible = true;
         alertPressed = -1;
-        alertSpring.set(0.85f);
+        alertSpring.set(0f);
+        Motion.tune(alertSpring, Motion.OPEN);
         alertSpring.target = 1f;
         invalidate();
     }
 
     private void closeAlert() {
         alertVisible = false;
+        Motion.tune(alertSpring, Motion.CLOSE);
         alertSpring.target = 0f;
         invalidate();
     }
@@ -1038,9 +1130,9 @@ public class HomeView extends View {
 
     private void drawAlert(Canvas c) {
         if (alertRows == null) return;
-        float p = alertVisible ? 1f : Math.max(0, (alertSpring.value - 0.85f) / 0.15f);
+        float p = Math.max(0, Math.min(1, alertSpring.value));
         c.drawColor(Icons.alpha(0x000000, 0.25f * p));
-        float s = alertSpring.value;
+        float s = Motion.reduced() ? 1f : 0.96f + 0.04f * p;
         c.save();
         c.scale(s, s, alertRect.centerX(), alertRect.centerY());
         glass.panel(c, alertRect, 30 * dp, p, 0.55f, 0);
@@ -1372,6 +1464,7 @@ public class HomeView extends View {
             touch = T_FOLDER;
             hit = folderHit(x, y);
             pressed = hit;
+            armPress(editMode ? null : keyFor(hit), -3);
             baseScroll = folderScroll;
             if (hit.type == Hit.FOLDER_ITEM) postDelayed(longPress, 420);
             return;
@@ -1381,6 +1474,7 @@ public class HomeView extends View {
         hit = hitTest(x, y);
         pressed = hit;
         touch = T_PENDING;
+        armPress(editMode ? null : keyFor(hit), hit.type == Hit.WIDGET ? 0 : hit.type == Hit.LIB ? -3 : hit.page);
         basePos = pagePos;
         baseScroll = libScroll;
         if (hit.type == Hit.ITEM || hit.type == Hit.LIB || hit.type == Hit.WIDGET
@@ -1391,6 +1485,7 @@ public class HomeView extends View {
 
     private void onLongPress() {
         if (touch == T_FOLDER && hit != null && hit.type == Hit.FOLDER_ITEM) {
+            releasePress(false);
             openMenu(hit);
             touch = T_MENU_ARMED;
             return;
@@ -1398,6 +1493,7 @@ public class HomeView extends View {
         if (touch != T_PENDING || hit == null) return;
         if (editMode) return;
         if (hit.type == Hit.ITEM || hit.type == Hit.LIB) {
+            releasePress(false);
             openMenu(hit);
             touch = T_MENU_ARMED;
         } else if (hit.type == Hit.WIDGET || hit.type == Hit.EMPTY) {
@@ -1413,17 +1509,20 @@ public class HomeView extends View {
             case T_PENDING:
                 if (editMode && hit != null && hit.type == Hit.ITEM && dist > slop) {
                     removeCallbacks(longPress);
+                    releasePress(false);
                     startDrag(hit, x, y);
                     touch = T_DRAG;
                 } else if (Math.abs(dx) > slop && Math.abs(dx) > Math.abs(dy)) {
                     removeCallbacks(longPress);
                     touch = T_PAGING;
                     pressed = null;
+                    releasePress(false);
                     basePos = pagePos;
                     downX = x;
                 } else if (Math.abs(dy) > slop && Math.abs(dy) > Math.abs(dx)) {
                     removeCallbacks(longPress);
                     pressed = null;
+                    releasePress(false);
                     if (Math.round(pagePos) >= libIndex()) { touch = T_LIB; downY = y; baseScroll = libScroll; }
                     else if (dy > 0 && !editMode) {
                         touch = downY < insetTop + 44 * dp ? T_NOTIF : T_SPOT;
@@ -1462,6 +1561,7 @@ public class HomeView extends View {
                     boolean draggable = hit != null && hit.type == Hit.ITEM;
                     if (draggable) {
                         menuVisible = false;
+                        Motion.tune(menuSpring, Motion.CLOSE);
                         menuSpring.target = 0f;
                         enterEdit();
                         startDrag(hit, x, y);
@@ -1473,8 +1573,8 @@ public class HomeView extends View {
                 }
                 break;
             case T_FOLDER:
-                if (Math.abs(dy) > slop && folderMaxScroll > 0) { removeCallbacks(longPress); touch = T_FOLDER_SCROLL; pressed = null; downY = y; baseScroll = folderScroll; }
-                else if (dist > slop) { removeCallbacks(longPress); pressed = null; hit = null; }
+                if (Math.abs(dy) > slop && folderMaxScroll > 0) { removeCallbacks(longPress); touch = T_FOLDER_SCROLL; pressed = null; releasePress(false); downY = y; baseScroll = folderScroll; }
+                else if (dist > slop) { removeCallbacks(longPress); pressed = null; hit = null; releasePress(false); }
                 break;
             case T_FOLDER_SCROLL:
                 folderScroll = Math.max(0, Math.min(folderMaxScroll, baseScroll - (y - downY)));
@@ -1496,10 +1596,12 @@ public class HomeView extends View {
         vt = null;
         int t = touch;
         touch = T_NONE;
+        if (t != T_PENDING && t != T_FOLDER) releasePress(false);
         Hit h = hit;
         pressed = null;
         switch (t) {
             case T_PENDING:
+                releasePress(!cancel && h != null && !editMode);
                 if (!cancel && h != null) tap(h);
                 break;
             case T_PAGING: {
@@ -1543,6 +1645,7 @@ public class HomeView extends View {
                 break;
             }
             case T_FOLDER:
+                releasePress(!cancel && h != null && h.type == Hit.FOLDER_ITEM && !editMode);
                 if (cancel || h == null) break;
                 if (h.type == Hit.FOLDER_ITEM && !editMode) launch(h.app, h.rect);
                 else if (h.type == Hit.FOLDER_TITLE && editMode && !folderReadOnly && folder != null) rename(folder);
@@ -1722,6 +1825,11 @@ public class HomeView extends View {
             // Nowhere valid (e.g. full dock): put it back.
             it.placed = false;
             dragSource.add(Math.min(dragSourceIndex, dragSource.size()), it);
+        }
+        if (mergeTarget == null && !Motion.reduced()) {
+            settleItem = it;
+            settle.set(dragLift.value);
+            settle.target = 0f;
         }
         dragItem = null;
         mergeTarget = null;

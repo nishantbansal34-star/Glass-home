@@ -229,6 +229,12 @@ public class Icons {
      */
     public void draw(Canvas c, AppInfo a, float x, float y, float s, int style, int tint,
                      Glass glass, boolean pressed, float alpha) {
+        draw(c, a, x, y, s, style, tint, glass, pressed ? 1f : 0f, alpha);
+    }
+
+    /** {@code press} 0..1: how far into the press the icon is (animated by the caller). */
+    public void draw(Canvas c, AppInfo a, float x, float y, float s, int style, int tint,
+                     Glass glass, float press, float alpha) {
         int al = Math.round(255 * alpha);
         if (a == null || a.full == null) {
             ph.setColor(alpha(0xFFFFFF, 0.25f * alpha));
@@ -254,8 +260,8 @@ public class Icons {
             bmp.setAlpha(al);
             c.drawBitmap(style == Prefs.ICON_DARK ? a.dark : a.full, null, r, bmp);
         }
-        if (pressed) {
-            ph.setColor(0x59000000);
+        if (press > 0.004f) {
+            ph.setColor(alpha(0x000000, 0.3f * press * alpha));
             c.drawPath(path(x, y, s), ph);
         }
     }

@@ -462,6 +462,8 @@ public class SettingsActivity extends Activity {
     private class Segmented extends View {
         private final String[] opts;
         private int sel;
+        private float pos;                       // animated thumb position, in segments
+        private android.animation.ValueAnimator slide;
         private final IntConsumer change;
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF r = new RectF();
@@ -470,6 +472,7 @@ public class SettingsActivity extends Activity {
             super(c);
             this.opts = opts;
             this.sel = Math.max(0, Math.min(opts.length - 1, sel));
+            this.pos = this.sel;
             this.change = change;
             p.setTextAlign(Paint.Align.CENTER);
         }
@@ -481,7 +484,7 @@ public class SettingsActivity extends Activity {
             p.setColor(dark ? 0x3D767680 : 0x1F767680);
             c.drawRoundRect(r, rad, rad, p);
             float sw = w / opts.length;
-            r.set(sel * sw + 2 * dp, 2 * dp, (sel + 1) * sw - 2 * dp, h - 2 * dp);
+            r.set(pos * sw + 2 * dp, 2 * dp, (pos + 1) * sw - 2 * dp, h - 2 * dp);
             p.setColor(dark ? 0xFF636366 : 0xFFFFFFFF);
             p.setShadowLayer(3 * dp, 0, 1 * dp, 0x22000000);
             c.drawRoundRect(r, rad - 2 * dp, rad - 2 * dp, p);
@@ -497,7 +500,22 @@ public class SettingsActivity extends Activity {
         @Override public boolean onTouchEvent(MotionEvent e) {
             if (e.getAction() == MotionEvent.ACTION_UP) {
                 int i = (int) Math.max(0, Math.min(opts.length - 1, e.getX() / (getWidth() / (float) opts.length)));
-                if (i != sel) { sel = i; invalidate(); change.accept(i); }
+                if (i != sel) {
+                    sel = i;
+                    if (slide != null) slide.cancel();
+                    if (Motion.reduced()) { pos = i; invalidate(); change.accept(i); return true; }
+                    // Thumb glides to the new segment (retargets from wherever it is), then applies.
+                    slide = android.animation.ValueAnimator.ofFloat(pos, i);
+                    slide.setDuration(220);
+                    slide.setInterpolator(Motion.EASE_IN_OUT);
+                    slide.addUpdateListener(a -> { pos = (float) a.getAnimatedValue(); invalidate(); });
+                    slide.addListener(new android.animation.AnimatorListenerAdapter() {
+                        boolean cancelled;
+                        @Override public void onAnimationCancel(android.animation.Animator a) { cancelled = true; }
+                        @Override public void onAnimationEnd(android.animation.Animator a) { if (!cancelled) change.accept(i); }
+                    });
+                    slide.start();
+                }
             }
             return true;
         }
